@@ -133,7 +133,7 @@ function readConfig {
 
 # Our main setup section, uses git to build a new environment
 function setupEnvironment {
-	git clone -b internal-develop $GLOBAL_GitRepo $GLOBAL_RootEnv
+	git clone $GLOBAL_GitRepo $GLOBAL_RootEnv
 	wait 
 
 	#Clean out all REPO variables
