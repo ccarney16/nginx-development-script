@@ -33,14 +33,19 @@ NginxVersion=""
 ENV_ConfigFile="$HOME/.nginx-dev.conf"
 
 # Location for all site configs
-ENV_SiteLocation="configs/per-site"
+ENV_SiteConfigs="configs/per-site"
 
-#Web Data
-ENV_WebData="websites"
+# Web Data
+ENV_WebRoot="websites"
+
+# Web Data Content
+ENV_DefaultWebContent="data"
 
 # Main nginx config
 ENV_NginxConfig="configs/nginx.conf"
 
+#Main script for each repo
+ENV_PRIMARYSCRIPT="setup.sh"
 
 # Global Config*
 
@@ -61,9 +66,6 @@ REPO_DEFAULTCONFIG="configs/site-default.conf"
 # Makes required directories
 REPO_MKDIR=""
 
-#Main script for each repo
-REPO_PRIMARYSCRIPT="setup.sh"
-
 ### END REPO VARIABLES ###
 
 ### START FUNCTIONS ###
@@ -71,7 +73,7 @@ REPO_PRIMARYSCRIPT="setup.sh"
 # Returns the help message
 function returnHelp {
 	echo ""
-	echo -e "\e[1mNginx Web Development Script v$_VER\e[0m"
+	echo "Nginx Web Development Script v$_VER"
 	echo "Usage: $0 COMMAND [options]"
 	echo ""
 	echo "Main commands:"
@@ -124,55 +126,53 @@ function readConfig {
 			fi
 		done < $1
 	else 
-		echo -e "\e[91mError! unable to find $1!\e[0m"
+		echo -e "Error! unable to find $1!"
 		exit
 	fi 	
 }
 
 # Our main setup section, uses git to build a new environment
 function setupEnvironment {
-	git clone $GLOBAL_GitRepo $GLOBAL_RootEnv
+	git clone -b internal-develop $GLOBAL_GitRepo $GLOBAL_RootEnv
+	wait 
 
 	#Clean out all REPO variables
 	compgen -v | grep -E "REPO_" | while read -r var; do
 		unset $var
 	done 
+	wait
 
 	readConfig "$GLOBAL_RootEnv/main.conf" REPO
 	wait
 
-	. "$GLOBAL_RootEnv/$REPO_PRIMARYSCRIPT"
+	. "$GLOBAL_RootEnv/$ENV_PRIMARYSCRIPT"
+	wait
 
-
-	echo -e "\e[1m\e[92mCreating directories"
+	echo "Creating directories..."
 	IFS=', ' read -r -a dirEntries <<< "$REPO_MKDIR"
 	for dir in ${dirEntries[@]}; do 
-		mkdir $GLOBAL_RootEnv/$dir -v
+		mkdir -v $GLOBAL_RootEnv/$dir
 	done;
 
+	# Make the website data folder
+	if [ ! -d $GLOBAL_RootEnv/$ENV_WebRoot ]; then 
+		mkdir -v $GLOBAL_RootEnv/$ENV_WebRoot
+	fi
+
+	#Now make the per site
+	if [ ! -d $GLOBAL_RootEnv/$ENV_SiteConfigs ]; then
+		mkdir -v $GLOBAL_RootEnv/$ENV_SiteConfigs
+	fi
+
 	# Set all variables
-	script_initRepo
+	setup_initRepo
 
 	echo -e "Rebuilding variables in nginx config files\e[0m"
 	
-	local varArray=(
-		$(compgen -v | grep -E "^ENV_")
-		$(compgen -v | grep -E "^CLI_") 
-		$(compgen -v | grep -E "^GLOBAL_") 
-		$(compgen -v | grep -E "^REPO_")
-		)
+	patchFile "$GLOBAL_RootEnv/$ENV_NginxConfig"
 
-	for var in ${varArray[@]}; do
-		local configVar=$(echo $var | sed -e "s/REPO_//g; s/GLOBAL_//g; s/CLI_//g")
-		sed -i "s|[{]$configVar[}]|${!var}|g" $GLOBAL_RootEnv/$ENV_NginxConfig	
-	done
-
-	if [ ! -d $GLOBAL_RootEnv/$ENV_SiteLocation ]; then
-		mkdir $GLOBAL_RootEnv/$ENV_SiteLocation
-	fi 
-
-	 # Add the default site
-	 addSite "localhost"
+	# Add the default site
+	addSite "localhost"
 }
 
 # Allows us to delete the environment and start from scratch
@@ -182,11 +182,11 @@ function rebuildEnvironment {
 		read -p "Do you want to rebuild the environment (all data will be lost!) [Y/n] " yn
 		case $yn in
 		[Yy]* )
-			rm $GLOBAL_RootEnv -dfr
+			rm -dfr $GLOBAL_RootEnv
 			setupEnvironment
-			echo -e "\e[1m\e[34mEnvironment files are located in \"$GLOBAL_RootEnv\"."
-			echo -e "Environment has been setup, make sure that you have everything configured before starting."
-			echo -e "Please issue this command again to fully start nginx.\e[0m"
+			echo "Environment files are located in \"$GLOBAL_RootEnv\"."
+			echo "Environment has been setup, make sure that you have everything configured before starting."
+			echo "Please issue this command again to fully start nginx."
 			stay=false
 			;;
 		[Nn]* )
@@ -206,7 +206,7 @@ function runNginx {
 
 	setup_onStart
 
-	echo -e "\e[1m\e[32mStarting nginx, please hold..."
+	echo "Starting nginx, please hold..."
 	
 	# Supress all info on screen, instead bringing it to a text file
 	$NginxBaseArgs 2> $GLOBAL_RootEnv/startup.txt
@@ -214,20 +214,20 @@ function runNginx {
 	sleep 1
 	if [ -f $GLOBAL_RootEnv/run/nginx.pid ]; then
 		PID=$(cat $GLOBAL_RootEnv/run/nginx.pid)
-		echo -e "\e[94mnginx is now runnning; PID.\e[33m$PID\e[0m"	
+		echo "nginx is now runnning; PID.$PID"	
 	else 
-		echo -e "\e[91mNginx did not start! Check $GLOBAL_RootEnv/startup.txt for more info\e[0m"
+		echo "Nginx did not start! Check $GLOBAL_RootEnv/startup.txt for more info"
 	fi
 }
 
 # Lets stop Nginx
 function stopNginx {
 	if [ -f $GLOBAL_RootEnv/run/nginx.pid ]; then
-		echo -e "\e[1m\e[32mStopping Nginx...\e[0m"
+		echo -e "Stopping Nginx..."
 		$NginxPath -c $GLOBAL_RootEnv/configs/nginx.conf -s stop 2> /dev/null
-		wait
+		sleep 1
 	else 	
-		echo -e "\e[91mNginx is currently not running\e[0m"
+		echo "Nginx is currently not running"
 	fi
 }
 
@@ -237,7 +237,7 @@ function textNginxConfig() {
 }
 
 function addSite {
-	if [ -f $GLOBAL_RootEnv/$ENV_SiteLocation/$1.conf ]; then
+	if [ -f $GLOBAL_RootEnv/$ENV_SiteConfigs/$1.conf ]; then
 		echo "Error! $1 already exists (maybe do a site rebuild instead?)"
 		exit
 	fi 
@@ -245,19 +245,17 @@ function addSite {
 	# Always set to Override
 	local ENV_ServerName="$1"
 
-	if [ -f $GLOBAL_RootEnv/$REPO_DEFAULTCONFIG ]; then
-		cp $GLOBAL_RootEnv/$REPO_DEFAULTCONFIG $GLOBAL_RootEnv/$ENV_SiteLocation/$1.conf
-		local varArray=(
-			$(compgen -v | grep -E "^ENV_")
-			$(compgen -v | grep -E "^CLI_") 
-			$(compgen -v | grep -E "^GLOBAL_") 
-			$(compgen -v | grep -E "^REPO_")
-			)
+	if [ ! -d $GLOBAL_RootEnv/$ENV_WebRoot/$ENV_ServerName ]; then
+		mkdir $GLOBAL_RootEnv/$ENV_WebRoot/$ENV_ServerName
+	fi
 
-		for var in ${varArray[@]}; do
-			local configVar=$(echo $var | sed -e "s/REPO_//g; s/GLOBAL_//g; s/CLI_//g")
-			sed -i "s|[{]$configVar[}]|${!var}|g" $GLOBAL_RootEnv/$ENV_SiteLocation/$1.conf	
-		done
+	# init before writing to the config file
+	setup_onAdd
+
+	if [ -f $GLOBAL_RootEnv/$REPO_DEFAULTCONFIG ]; then
+		cp $GLOBAL_RootEnv/$REPO_DEFAULTCONFIG $GLOBAL_RootEnv/$ENV_SiteConfigs/$1.conf
+
+		patchFile $GLOBAL_RootEnv/$ENV_SiteConfigs/$1.conf	
 	else 
 		echo "Missing $REPO_DEFAULTCONFIG in the environment!"
 		exit 
@@ -273,14 +271,15 @@ function patchFile {
 	fi
 
 	local varArray=(
+		$(compgen -v | grep -E "^ENV_")
 		$(compgen -v | grep -E "^CLI_") 
 		$(compgen -v | grep -E "^GLOBAL_") 
 		$(compgen -v | grep -E "^REPO_")
 		)
 
 	for var in ${varArray[@]}; do
-		local configVar=$(echo $var | sed -e "s/REPO_//g; s/GLOBAL_//g; s/CLI_//g")
-		sed -i "s|[{]$configVar[}]|${!var}|g" $GLOBAL_RootEnv/$ENV_SiteLocation/$1.conf	
+		local configVar=$(echo $var | sed -e "s/ENV_//g; s/CLI_//g; s/REPO_//g; s/GLOBAL_//g;")
+		sed -i "s|[{]$configVar[}]|${!var}|g" $1	
 	done
 }
 
@@ -291,7 +290,7 @@ findNginx
 # If the nginx path is not blank
 if [ "$NginxPath" == "" ];
 then
-	echo -e "\e[91mNginx was not found!\e[0m"
+	echo "Nginx was not found!"
 	exit 0
 fi
 
@@ -324,8 +323,6 @@ for ((i=0; i<$((arrLength)); i++ )); do
 	fi
 done 
 
-helpEnabled=false
-
 # Parse the secondary arguements as variables
 for ((i=0; i<$((${#optionalParameters[@]})); i++ )); do
 	if [[ ${optionalParameters[i]} =~ "--" ]]; then 
@@ -333,7 +330,7 @@ for ((i=0; i<$((${#optionalParameters[@]})); i++ )); do
 		param=$(echo ${optionalParameters[i]} | sed -e 's/--//g')
 		IFS='=' read -r -a arr <<< "$param"
 
-		if [ ${#arr[@]} -lt 1 ]; then
+		if [ ${#arr[@]} -gt 1 ]; then
 			export CLI_${arr[0]}="${arr[1]}"	
 		else 
 			#Consider as a boolean value if there is no assigned variable 
@@ -359,7 +356,8 @@ wait
 # Setup base args for nginx
 NginxBaseArgs="$NginxPath -c $GLOBAL_RootEnv/configs/nginx.conf"
 
-if [[ $CLI_help == true ]]; then
+if [[ -v $CLI_help ]]; then
+	. "$GLOBAL_RootEnv/$ENV_PRIMARYSCRIPT"
 	returnHelp
 	exit 1
 fi
@@ -367,7 +365,7 @@ fi
 if [ ${#mainArgs[@]} -gt 0 ]; then
 	case "${mainArgs[0]}" in
 		start )
-			. "$GLOBAL_RootEnv/$REPO_PRIMARYSCRIPT"
+			. "$GLOBAL_RootEnv/$ENV_PRIMARYSCRIPT"
 			# run the web server
 			runNginx
 			exit
@@ -376,12 +374,12 @@ if [ ${#mainArgs[@]} -gt 0 ]; then
 			echo "not implemented yet" 
 			;;
 		stop )
-			. "$GLOBAL_RootEnv/$REPO_PRIMARYSCRIPT"
+			. "$GLOBAL_RootEnv/$ENV_PRIMARYSCRIPT"
 			stopNginx
 			exit
 			;;
 		config )
-			. "$GLOBAL_RootEnv/$REPO_PRIMARYSCRIPT"
+			. "$GLOBAL_RootEnv/$ENV_PRIMARYSCRIPT"
 			if [ ${#mainArgs[@]} -gt 1 ]; then
 				case ${mainArgs[1]} in 
 					list )
@@ -408,4 +406,6 @@ if [ ${#mainArgs[@]} -gt 0 ]; then
 			textNginxConfig
 			;;
 	esac
+else 
+	echo "Error! No commands were issued!"
 fi
